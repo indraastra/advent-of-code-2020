@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 import heapq
 from typing import Any, Set
 
+import numpy as np
+
 
 def neighboring_cells(cell):
     x, y = cell
@@ -16,36 +18,74 @@ class Tile:
     bottom: str
     left: str
     right: str
+    img: np.array
     flipped: bool = False
     rotation: int = 0
 
     @staticmethod
     def from_record(record):
-        tile_id, tile_map = record.split(':')
+        tile_id, tile_map = record.split(":")
         tile_id = int(tile_id.strip().split()[-1])
         rows = tile_map.strip().splitlines()
         top = rows[0]
         bottom = rows[-1]
-        left = ''.join(row[0] for row in rows)
-        right = ''.join(row[-1] for row in rows)
-        return Tile(tile_id, top, bottom, left, right)
+        left = "".join(row[0] for row in rows)
+        right = "".join(row[-1] for row in rows)
+        img = np.array([list(r) for r in rows])
+        return Tile(tile_id, top, bottom, left, right, img)
 
     def edges(self):
         return set([self.top, self.bottom, self.left, self.right])
 
     def flip(self):
-        return Tile(self.tile_id,
-                    self.top[::-1], self.bottom[::-1], self.right, self.left,
-                    not self.flipped, self.rotation)
+        """Flips across vertical axis."""
+        return Tile(
+            self.tile_id,
+            self.top[::-1],
+            self.bottom[::-1],
+            self.right,
+            self.left,
+            self.img,
+            not self.flipped,
+            self.rotation,
+        )
 
     def rotate(self, amount):
+        """Rotates clockwise by `amount`."""
         rotation = (self.rotation + amount) % 360
         if amount == 90:
-            return Tile(self.tile_id, self.left[::-1], self.right[::-1], self.bottom, self.top, self.flipped, rotation)
+            return Tile(
+                self.tile_id,
+                self.left[::-1],
+                self.right[::-1],
+                self.bottom,
+                self.top,
+                self.img,
+                self.flipped,
+                rotation,
+            )
         elif amount == 180:
-            return Tile(self.tile_id, self.bottom[::-1], self.top[::-1], self.right[::-1], self.left[::-1], self.flipped, rotation)
+            return Tile(
+                self.tile_id,
+                self.bottom[::-1],
+                self.top[::-1],
+                self.right[::-1],
+                self.left[::-1],
+                self.img,
+                self.flipped,
+                rotation,
+            )
         elif amount == 270:
-            return Tile(self.tile_id, self.right, self.left, self.top[::-1], self.bottom[::-1], self.flipped, rotation)
+            return Tile(
+                self.tile_id,
+                self.right,
+                self.left,
+                self.top[::-1],
+                self.bottom[::-1],
+                self.img,
+                self.flipped,
+                rotation,
+            )
         else:
             return self
 
@@ -63,8 +103,22 @@ class Tile:
     def fits_above(self, tile):
         return self.bottom == tile.top
 
+    def image(self, strip_borders=False):
+        img = self.img
+        if self.flipped:
+            img = np.fliplr(img)
+        if self.rotation:
+            img = np.rot90(img, self.rotation // 90, axes=(1, 0))
+        return img[1:-1, 1:-1] if strip_borders else img
+
     def __hash__(self):
         return hash(self.tile_key())
+
+    def __str__(self):
+        rows = [f"id={self.tile_id} | flip={self.flipped} | rot={self.rotation}"]
+        for row in self.image():
+            rows.append("".join(row))
+        return "\n".join(rows)
 
 
 class TileMap:
@@ -87,10 +141,12 @@ class TileMap:
     def fits(self, tile, cell):
         neighbors = self.neighboring_tiles(cell)
         left_tile, above_tile, right_tile, below_tile = neighbors
-        return ((not left_tile or left_tile.fits_left_of(tile)) and
-                (not right_tile or tile.fits_left_of(right_tile)) and
-                (not above_tile or above_tile.fits_above(tile)) and
-                (not below_tile or tile.fits_above(below_tile)))
+        return (
+            (not left_tile or left_tile.fits_left_of(tile))
+            and (not right_tile or tile.fits_left_of(right_tile))
+            and (not above_tile or above_tile.fits_above(tile))
+            and (not below_tile or tile.fits_above(below_tile))
+        )
 
     def place(self, tile, cell):
         new_cells = dict(self.cells)
@@ -117,25 +173,43 @@ class TileMap:
 
     def is_filled(self):
         x_lo, x_hi, y_lo, y_hi = self.bounds()
-        for x in range(x_lo, x_hi+1):
-            for y in range(y_lo, y_hi+1):
+        for x in range(x_lo, x_hi + 1):
+            for y in range(y_lo, y_hi + 1):
                 if not self.cells.get((x, y)):
                     return False
         return True
 
     def corners(self):
         x_lo, x_hi, y_lo, y_hi = self.bounds()
-        return [self.cells[(x_lo, y_lo)],
-                self.cells[(x_hi, y_lo)],
-                self.cells[(x_lo, y_hi)],
-                self.cells[(x_hi, y_hi)]]
+        return [
+            self.cells[(x_lo, y_lo)],
+            self.cells[(x_hi, y_lo)],
+            self.cells[(x_lo, y_hi)],
+            self.cells[(x_hi, y_hi)],
+        ]
+
+    def stitch(self, as_string=False):
+        rows = []
+        x_lo, x_hi, y_lo, y_hi = self.bounds()
+        for y in range(y_lo, y_hi + 1):
+            row = []
+            for x in range(x_lo, x_hi + 1):
+                row.append(self.cells.get((x, y)).image(strip_borders=True))
+            rows.append(np.concatenate(row, axis=1))
+        img = np.concatenate(rows, axis=0)
+        if as_string:
+            return "\n".join("".join(r) for r in img)
+        else:
+            return img
 
     def print(self):
         x_lo, x_hi, y_lo, y_hi = self.bounds()
-        for y in range(y_lo, y_hi+1):
-            for x in range(x_lo, x_hi+1):
+        for y in range(y_lo, y_hi + 1):
+            for x in range(x_lo, x_hi + 1):
                 print(
-                    f'{self.cells[(x,y)].tile_id if (x,y) in self.cells else ".":<6}', end='')
+                    f'{self.cells[(x,y)].tile_id if (x,y) in self.cells else ".":<6}',
+                    end="",
+                )
             print()
 
     def __lt__(self, other):
@@ -153,11 +227,11 @@ def place_all(tiles, size):
     tile_map = TileMap()
 
     def add_placement(tile_map, tile, cell, remaining):
-        neighbors = sum(
-            t is not None for t in tile_map.neighboring_tiles(cell))
+        neighbors = sum(t is not None for t in tile_map.neighboring_tiles(cell))
         priority = (len(remaining), -neighbors)
-        heapq.heappush(placements, PrioritizedItem(
-            priority, (tile_map, tile, cell, remaining)))
+        heapq.heappush(
+            placements, PrioritizedItem(priority, (tile_map, tile, cell, remaining))
+        )
 
     def get_placement():
         return heapq.heappop(placements).item
@@ -210,12 +284,10 @@ class TileMapV1:
                     yield self.place_above(other_tile, oriented)
 
     def place_left_of(self, t1, t2):
-        return TileMapV1(self.tiles | {t1, t2},
-                         self.edges | {Edge('left', t1, t2)})
+        return TileMapV1(self.tiles | {t1, t2}, self.edges | {Edge("left", t1, t2)})
 
     def place_above(self, t1, t2):
-        return TileMapV1(self.tiles | {t1, t2},
-                         self.edges | {Edge('above', t1, t2)})
+        return TileMapV1(self.tiles | {t1, t2}, self.edges | {Edge("above", t1, t2)})
 
     def complete_edges(self):
         edge_completions = defaultdict(lambda: None)
@@ -238,16 +310,36 @@ class TileMapV1:
                 changed |= add_edge(edge)
                 position, t1, t2 = edge.position, edge.tile1, edge.tile2
                 new_edges = []
-                if edge.position == 'left':
+                if edge.position == "left":
                     new_edges.append(
-                        ('left', edge_completions[(t1, 'above')],  edge_completions[(t2, 'above')]))
+                        (
+                            "left",
+                            edge_completions[(t1, "above")],
+                            edge_completions[(t2, "above")],
+                        )
+                    )
                     new_edges.append(
-                        ('left', edge_completions[('above', t1)], edge_completions[('above', t2)]))
-                elif edge.position == 'above':
+                        (
+                            "left",
+                            edge_completions[("above", t1)],
+                            edge_completions[("above", t2)],
+                        )
+                    )
+                elif edge.position == "above":
                     new_edges.append(
-                        ('above', edge_completions[(t1, 'left')],  edge_completions[(t2, 'left')]))
+                        (
+                            "above",
+                            edge_completions[(t1, "left")],
+                            edge_completions[(t2, "left")],
+                        )
+                    )
                     new_edges.append(
-                        ('above', edge_completions[('left', t1)], edge_completions[('left', t2)]))
+                        (
+                            "above",
+                            edge_completions[("left", t1)],
+                            edge_completions[("left", t2)],
+                        )
+                    )
                 for position, t1, t2 in new_edges:
                     if t1 and t2:
                         changed |= add_edge(Edge(position, t1, t2))
@@ -263,13 +355,19 @@ class TileMapV1:
         _, edge_completions = self.complete_edges()
         tl = tr = bl = br = None
         for t in self.tiles:
-            if not edge_completions[('above', t)] and not edge_completions[('left', t)]:
+            if not edge_completions[("above", t)] and not edge_completions[("left", t)]:
                 tl = t
-            elif not edge_completions[('above', t)] and not edge_completions[(t, 'left')]:
+            elif (
+                not edge_completions[("above", t)] and not edge_completions[(t, "left")]
+            ):
                 tr = t
-            elif not edge_completions[(t, 'above')] and not edge_completions[('left', t)]:
+            elif (
+                not edge_completions[(t, "above")] and not edge_completions[("left", t)]
+            ):
                 bl = t
-            elif not edge_completions[(t, 'above')] and not edge_completions[(t, 'left')]:
+            elif (
+                not edge_completions[(t, "above")] and not edge_completions[(t, "left")]
+            ):
                 br = t
         return tl, tr, bl, br
 
@@ -278,8 +376,7 @@ def place_all_v1(tiles, size):
     possibilities = []
 
     def add_possibility(tile_map, remaining):
-        heapq.heappush(possibilities, (len(remaining),
-                                       tile_map, frozenset(remaining)))
+        heapq.heappush(possibilities, (len(remaining), tile_map, frozenset(remaining)))
 
     initial_tile_map = list(TileMapV1().try_placing(tiles[0]))[0]
     add_possibility(initial_tile_map, tiles[1:])
